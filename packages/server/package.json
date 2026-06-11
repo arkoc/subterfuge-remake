@@ -1,0 +1,29 @@
+{
+  "name": "@subterfuge/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist",
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "@subterfuge/sim": "workspace:*",
+    "hono": "^4.6.16",
+    "@hono/node-server": "^1.13.7",
+    "ws": "^8.18.0",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "better-sqlite3": "^11.7.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13",
+    "@types/better-sqlite3": "^7.6.12"
+  }
+}

@@ -1,0 +1,3031 @@
+/*
+ * SUBTERFUGE — mobile-first tactical sonar.
+ *
+ * Layout principles:
+ *   - The Pixi canvas fills the entire viewport. The map is the
+ *     primary surface.
+ *   - All UI is overlay: top HUD, FABs, scrubber strip, bottom sheet.
+ *   - Bottom sheet is the contextual area for outpost details, launch
+ *     dialog, chat, fleet, queue.
+ *   - Touch-first: 44px+ touch targets, drag-friendly affordances.
+ */
+
+:root {
+  /* Surfaces */
+  --bg-void: #020812;
+  --bg-deep: #050e1f;
+  --bg-surface: #0a1a30;
+  --bg-surface-2: #0e2240;
+  --bg-overlay: rgba(5, 14, 31, 0.88);
+
+  /* Lines / borders */
+  --line-faint: #15243d;
+  --line-mid: #1f3a5c;
+  --line-strong: #2c517d;
+
+  /* Phosphor accents */
+  --phos: #7af0c8;
+  --phos-dim: rgba(122, 240, 200, 0.4);
+  --phos-glow: rgba(122, 240, 200, 0.18);
+  --phos-trace: rgba(122, 240, 200, 0.06);
+
+  /* Status colours */
+  --warn: #ffb547;          /* pending · queue · captive · neutral-outcome */
+  --crit: #ff5470;          /* threat · loss · error */
+  --ok: #7af0c8;            /* alias for --phos */
+  --cap-warn: #ff7a36;      /* electrical cap (was warn — disambiguated) */
+  --scrub-future: #9bdcfb;  /* HUD/scrubber chrome when projecting forward */
+  --scrub-past: #c79bfb;    /* HUD/scrubber chrome when replaying past */
+  --queen-gold: #ffd76b;    /* queen-here on-map glyph + queen tag tint */
+  --combat-attacker: #5fb4ff; /* attacker side in combat previews */
+
+  /* Text */
+  --txt: #d8e6f2;
+  --txt-dim: #8aa0bd;
+  --txt-mute: #5a708f;
+
+  /* Display + body are BOTH IBM Plex Mono now. Major Mono Display was
+     removed entirely: its uppercase letterforms are decorative boxes
+     that turned words into glyph salad anywhere a label hit
+     text-transform: uppercase ("reinforce", "or promote", the winner
+     pill). The --mono-display variable survives as an alias so the
+     ~30 existing usages keep working; "display" now just means "the
+     numeric/value voice" (usually heavier weight), not a different
+     typeface. */
+  --mono-display: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --mono-body: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
+}
+
+body {
+  background: var(--bg-void);
+  color: var(--txt);
+  font-family: var(--mono-body);
+  font-size: 13px;
+  line-height: 1.45;
+  font-feature-settings: 'tnum' 1, 'zero' 1, 'ss01' 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* --------- Full-viewport map host --------- */
+
+.map-host {
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 50% 50%, rgba(15, 35, 64, 0.9) 0%, var(--bg-void) 75%);
+  z-index: 0;
+}
+
+.map-host canvas {
+  display: block;
+}
+
+/* Subtle SVG grain for atmosphere */
+.map-host::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='1' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.48  0 0 0 0 0.94  0 0 0 0 0.78  0 0 0 0.04 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  opacity: 0.55;
+  mix-blend-mode: overlay;
+  z-index: 1;
+}
+
+
+/* --------- Threat ribbon (persistent inbound-sub alert) --------- */
+/*
+ * Sits directly under the HUD whenever at least one enemy sub is
+ * inbound at an outpost the active player owns. Always visible while
+ * threats exist — does not auto-dismiss like a toast. Tap to open the
+ * event log for full context.
+ */
+
+/* --------- Drag-to-scrub tether --------- */
+/*
+ * Visualises the drag-to-scrub gesture's coupling to the timeline.
+ * The tooltip floats above the drag cursor showing the projected
+ * arrival offset (`+8h12m`). A faint dashed vertical line drops from
+ * the cursor toward the scrubber strip at the bottom so the
+ * "drag here ↔ scrubber moves" relationship is glanceable.
+ *
+ * Both elements are pointer-events:none so they never intercept the
+ * drag itself.
+ */
+.drag-scrub-tether {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 12;
+}
+.drag-scrub-line {
+  position: absolute;
+  width: 1px;
+  height: 60vh;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--scrub-future) 0 4px,
+    transparent 4px 8px
+  );
+  opacity: 0.35;
+  transform: translateX(-0.5px);
+}
+.drag-scrub-tooltip {
+  position: absolute;
+  transform: translate(-50%, 0);
+  padding: 3px 7px;
+  background: var(--bg-overlay);
+  border: 1px solid var(--scrub-future);
+  border-radius: 2px;
+  color: var(--scrub-future);
+  font-family: var(--mono-display);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  backdrop-filter: blur(6px);
+}
+
+/* Sub-hover tooltip — follows the cursor over a sub blip; non-
+   interactive so it never blocks pointer-down on the blip. Anchored
+   just up-right of the cursor so the blip itself stays visible. */
+.sub-hover-tooltip {
+  position: fixed;
+  pointer-events: none;
+  z-index: 13;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 7px;
+  background: var(--bg-overlay);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  color: var(--txt);
+  font-family: var(--mono-display);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  backdrop-filter: blur(6px);
+}
+.sub-hover-arrow { color: var(--phos); }
+.sub-hover-dst { color: var(--txt); text-transform: uppercase; }
+.sub-hover-eta { color: var(--txt-mute); font-variant-numeric: tabular-nums; }
+
+/* --------- Cluster-tap picker --------------------------------------- */
+/* Small floating list shown when a tap hits ≥2 overlapping outposts.
+   Backdrop catches outside-clicks; menu is anchored at the tap point. */
+.cluster-picker-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 14;
+  /* Transparent — its only job is to catch clicks outside the menu. */
+  background: transparent;
+}
+.cluster-picker {
+  position: fixed;
+  z-index: 15;
+  min-width: 180px;
+  background: var(--bg-overlay);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-family: var(--mono-body);
+  padding: 4px 0;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+.cluster-picker-header {
+  font-size: 10px;
+  color: var(--txt-mute);
+  padding: 4px 12px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--line-faint);
+  margin-bottom: 2px;
+}
+.cluster-picker-row {
+  display: grid;
+  grid-template-columns: 14px 14px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 6px 12px;
+  color: var(--txt);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.cluster-picker-row:hover { background: rgba(122, 240, 200, 0.07); }
+.cluster-picker-row:focus-visible {
+  outline: 1px solid var(--phos);
+  outline-offset: -1px;
+}
+.cluster-picker-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid;
+}
+.cluster-picker-glyph {
+  color: var(--txt-mute);
+  font-size: 13px;
+  text-align: center;
+}
+.cluster-picker-name {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cluster-picker-kind {
+  color: var(--txt-mute);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.cluster-picker-zoom {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line-faint);
+  margin-top: 2px;
+  padding: 6px 12px;
+  color: var(--phos);
+  font: inherit;
+  font-size: 11px;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.cluster-picker-zoom:hover { background: rgba(122, 240, 200, 0.08); }
+
+/* --------- Command palette (Cmd-K) ---------------------------------- */
+.command-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(2, 8, 18, 0.55);
+  backdrop-filter: blur(2px);
+}
+.command-palette {
+  position: fixed;
+  z-index: 21;
+  left: 50%;
+  top: 14vh;
+  transform: translateX(-50%);
+  width: min(520px, calc(100vw - 32px));
+  background: var(--bg-overlay);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+  font-family: var(--mono-body);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.command-input {
+  width: 100%;
+  padding: 12px 16px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line-faint);
+  color: var(--txt);
+  font: inherit;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  outline: none;
+}
+.command-input::placeholder { color: var(--txt-mute); }
+.command-results {
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.command-empty {
+  padding: 16px;
+  color: var(--txt-mute);
+  text-align: center;
+  font-size: 12px;
+}
+.command-result {
+  display: grid;
+  grid-template-columns: 14px 14px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 8px 16px;
+  color: var(--txt);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.command-result.active { background: rgba(122, 240, 200, 0.1); }
+.command-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid;
+}
+.command-glyph {
+  color: var(--txt-mute);
+  font-size: 13px;
+  text-align: center;
+}
+.command-name {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.command-kind {
+  color: var(--txt-mute);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.command-footer {
+  display: flex;
+  gap: 16px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--line-faint);
+  font-size: 10px;
+  color: var(--txt-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.command-footer kbd {
+  font-family: var(--mono-display);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line-faint);
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-size: 9px;
+  color: var(--txt);
+}
+
+/* --------- Threat lane (multi-row replacement) --------- */
+/*
+ * Sits below the HUD, anchored left. ONE source of truth for
+ * "you have inbound enemy subs". Replaces the single-line ribbon
+ * and (in the design) supersedes the on-outpost ⚔ badge.
+ */
+
+.threat-lane {
+  position: fixed;
+  top: calc(48px + env(safe-area-inset-top, 0px));
+  left: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  z-index: 11;
+  max-width: min(260px, calc(100vw - 80px));
+  /* 3-cycle pulse on appearance — alert without becoming noise */
+  animation: threatPulse 1500ms ease-in-out 3;
+}
+
+@keyframes threatPulse {
+  0%, 100% { filter: drop-shadow(0 0 0 rgba(255, 84, 112, 0)); }
+  50%      { filter: drop-shadow(0 0 8px rgba(255, 84, 112, 0.6)); }
+}
+
+.threat-lane-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: rgba(255, 84, 112, 0.2);
+  border: 1px solid var(--crit);
+  border-radius: 2px;
+  color: var(--crit);
+  font-family: var(--mono-display);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: lowercase;
+  align-self: flex-start;
+  backdrop-filter: blur(6px);
+}
+
+.threat-glyph {
+  font-family: var(--mono-body);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.threat-count {
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.threat-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 8px;
+  background: rgba(2, 8, 18, 0.85);
+  border: 1px solid var(--line-mid);
+  border-left-width: 3px;
+  border-radius: 2px;
+  color: var(--txt);
+  font-family: var(--mono-body);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-align: left;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  touch-action: manipulation;
+  white-space: nowrap;
+}
+.threat-row:active { transform: scale(0.98); }
+
+.threat-row-name {
+  text-transform: uppercase;
+  color: var(--txt);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.threat-row-eta {
+  color: var(--txt-dim);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono-display);
+}
+
+.threat-row-outcome {
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 1px;
+}
+
+/* Outcome colors — match the semantic palette */
+.threat-row-lose {
+  border-left-color: var(--crit);
+}
+.threat-row-lose .threat-row-outcome {
+  color: var(--crit);
+  background: rgba(255, 84, 112, 0.18);
+}
+.threat-row-hold {
+  border-left-color: var(--phos);
+}
+.threat-row-hold .threat-row-outcome {
+  color: var(--phos);
+  background: rgba(122, 240, 200, 0.16);
+}
+.threat-row-tie {
+  border-left-color: var(--warn);
+}
+.threat-row-tie .threat-row-outcome {
+  color: var(--warn);
+  background: rgba(255, 181, 71, 0.18);
+}
+
+.threat-row-overflow {
+  background: transparent;
+  border: 1px dashed var(--line-mid);
+  border-left-width: 1px;
+  color: var(--txt-mute);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+
+/* --------- Drag-launch onboarding hint --------- */
+/*
+ * Slim one-shot tip near the bottom of the map (above the scrubber)
+ * teaching the drag-to-launch gesture. Shown only on a player's first
+ * visit; dismisses on tap or after 7 seconds. localStorage flag
+ * `subterfuge-drag-hint-seen` suppresses it on subsequent loads.
+ */
+
+.drag-hint {
+  position: fixed;
+  /* Floats below the HUD (and below the threat ribbon if visible).
+     Clear of the right-edge map-tools cluster. */
+  top: calc(84px + env(safe-area-inset-top, 0px));
+  left: 8px;
+  right: 60px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-overlay);
+  border: 1px solid var(--phos);
+  border-radius: 2px;
+  color: var(--phos);
+  font-family: var(--mono-body);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-align: left;
+  cursor: pointer;
+  z-index: 14;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 0 12px var(--phos-glow);
+  animation: fadeIn 200ms ease-out;
+  touch-action: manipulation;
+}
+
+.drag-hint-glyph {
+  font-family: var(--mono-display);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.drag-hint-text {
+  flex: 1;
+  min-width: 0;
+  text-transform: lowercase;
+}
+
+.drag-hint-dismiss {
+  color: var(--txt-mute);
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+@media (min-width: 720px) {
+  .drag-hint {
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    max-width: 480px;
+    width: max-content;
+    top: 80px;
+  }
+}
+
+/* --------- Top HUD (floating) --------- */
+
+/* --------- HUD strip (single line, glyph-prefixed) --------- */
+/*
+ * One continuous strip across the top — no pill boxes, no per-stat
+ * borders. Each metric is "glyph value secondary". The whole thing
+ * has a single faint background so the map underneath shows through.
+ * On narrow viewports the strip wraps; secondary numbers drop first.
+ */
+
+.hud {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 12px;
+  padding-top: calc(10px + env(safe-area-inset-top, 0px));
+  z-index: 10;
+  pointer-events: none;
+  /* Backdrop: solid for the upper ~70% so HUD text always renders
+     against opaque bg (outposts near the top edge of the map don't
+     bleed through and clash with stat numbers), then fade to clear
+     so there's no hard edge against the map below. */
+  background: linear-gradient(
+    to bottom,
+    rgba(2, 8, 18, 0.95) 0%,
+    rgba(2, 8, 18, 0.85) 70%,
+    rgba(2, 8, 18, 0.0) 100%
+  );
+  font-variant-numeric: tabular-nums;
+  /* Mobile default: single row, no wrap; the FAB column doesn't extend
+     past x=56px so the right edge of the HUD has plenty of room. */
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.hud > * { pointer-events: auto; }
+
+/* Brand removed from HUD entirely — page <title> already says
+   SUBTERFUGE / SONAR. Keep the rule as a no-op for backwards-compat
+   in case the JSX still emits the span. */
+.hud .brand { display: none; }
+
+.hud .stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: var(--mono-body);
+  white-space: nowrap;
+}
+
+/* When a .stat is rendered as a <button> (deep link), strip the
+   default chrome so the visual reads identical to the span variant.
+   Cursor + subtle hover lift hints at the affordance. */
+button.hud-link {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+button.hud-link:hover .glyph,
+button.hud-link:hover .value { filter: brightness(1.25); }
+button.hud-link:focus-visible {
+  outline: 1px solid var(--phos);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.hud .stat .glyph {
+  font-size: 13px;
+  color: var(--txt-mute);
+  line-height: 1;
+}
+
+.hud .stat .value {
+  font-family: var(--mono-display);
+  color: var(--txt);
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  /* Tabular figures so numbers don't visually jitter as drillers tick
+     up. */
+  font-variant-numeric: tabular-nums;
+}
+
+.hud .stat .sub {
+  font-size: 10px;
+  color: var(--txt-mute);
+  letter-spacing: 0.05em;
+}
+
+/* Electrical-cap warn — distinct from scrubbed-time so the two
+   conditions don't share a single channel. */
+.hud .stat.warn .glyph,
+.hud .stat.warn .value { color: var(--cap-warn); }
+
+/* Scrubbed-state HUD chrome — cyan when projecting forward, purple
+   when replaying past. The class is the same; an inline direction
+   modifier (.scrub-fwd / .scrub-back) supplied by App.tsx picks the
+   color. Falls back to amber if neither modifier is present. */
+.hud .stat.scrubbed .glyph,
+.hud .stat.scrubbed .value { color: var(--warn); }
+.hud .stat.scrubbed.scrub-fwd .glyph,
+.hud .stat.scrubbed.scrub-fwd .value { color: var(--scrub-future); }
+.hud .stat.scrubbed.scrub-back .glyph,
+.hud .stat.scrubbed.scrub-back .value { color: var(--scrub-past); }
+
+/* Next-event chip — single soonest event in a 6h horizon. Color
+   encodes severity: threat=crit (red), hire=phos (green/free),
+   arrival=neutral text. The pulse on "now" draws the eye when the
+   event has actually fired. */
+.hud .stat.next-event .sub { text-transform: uppercase; }
+.hud .stat.next-event-threat .glyph,
+.hud .stat.next-event-threat .value { color: var(--crit); }
+.hud .stat.next-event-hire .glyph,
+.hud .stat.next-event-hire .value { color: var(--phos); }
+.hud .stat.next-event-arrival .glyph,
+.hud .stat.next-event-arrival .value { color: var(--txt); }
+.hud .stat.next-event:where(.next-event-threat, .next-event-hire) .value:where([data-now]) {
+  animation: pulse-fade 1.4s ease-in-out infinite;
+}
+@keyframes pulse-fade {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.hud .stat .victory-bar {
+  display: inline-block;
+  width: 76px;
+  height: 2px;
+  background: var(--line-mid);
+  position: relative;
+  margin-left: 4px;
+  vertical-align: middle;
+  border-radius: 1px;
+}
+
+.hud .stat .victory-bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--phos);
+  box-shadow: 0 0 6px var(--phos-glow);
+  border-radius: 1px;
+}
+
+/* Finish-line cap at 200 kg — the race has a visible tape. */
+.hud .stat .victory-bar::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--txt-dim);
+  opacity: 0.8;
+}
+
+/* Rival ticks — one per living opponent at their live progress.
+   Taller than the bar so they read as positions in a race, not
+   segments of my own progress. */
+.hud .stat .victory-bar .rival {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  opacity: 0.95;
+}
+
+.hud .sep {
+  width: 1px;
+  height: 14px;
+  background: var(--line-mid);
+  opacity: 0.6;
+}
+
+.hud .grow { flex: 1; }
+
+.hud .player-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-mid);
+  border-radius: 2px;
+  background: var(--bg-overlay);
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--mono-display);
+}
+
+.hud .player-chip:active { transform: scale(0.97); }
+
+.hud .player-chip .label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--txt-mute);
+}
+
+.hud .player-chip .value {
+  color: var(--txt);
+  font-size: 13px;
+}
+
+.hud .player-chip .swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+  box-shadow: 0 0 6px currentColor;
+}
+
+.hud .winner {
+  font-family: var(--mono-body);
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--phos);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 4px 8px;
+  border: 1px solid var(--phos);
+  background: rgba(122, 240, 200, 0.12);
+  box-shadow: 0 0 12px var(--phos-glow);
+}
+
+@media (max-width: 600px) {
+  .hud {
+    /* Tighter gap + padding so all four stats + player chip fit on a
+       single 390px-wide row without the chip getting clipped on the
+       right by overflow:hidden. */
+    gap: 8px;
+    padding: 8px 6px;
+    padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  }
+  .hud .brand { display: none; }
+  /* Hide the descriptive labels (capped / kg / hire / +N/d) — the
+     glyph + value + color already convey the state on small screens.
+     KEEP the .sub.keep-mobile spans (e.g. the "/150" cap divisor)
+     because they're load-bearing info, not redundant labels. */
+  .hud .stat .sub:not(.keep-mobile) { display: none; }
+  .hud .sep { display: none; }
+  /* Trim the victory bar so the three stats + player chip fit on one
+     row at 360-400px viewports. */
+  .hud .stat .victory-bar { width: 28px; }
+  .hud .stat .value { font-size: 13px; }
+  .hud .stat .glyph { font-size: 12px; }
+  .hud .player-chip { padding: 3px 5px; gap: 4px; }
+  .hud .player-chip .label { display: none; }
+}
+
+/* --------- Bottom tab bar (primary nav) --------- */
+/*
+ * Mobile-native primary navigation. Five tabs span the bottom edge
+ * just above the iOS home indicator. Layout: glyph stacked over a
+ * small label, with a thin phosphor border across the top of the
+ * active tab. Sits in the thumb-reach zone — the user shouldn't have
+ * to reach the top of the screen to switch sheets.
+ *
+ * On desktop (≥ 720px) the tabbar collapses into a vertical column
+ * docked to the right side, restoring the rail feel and leaving the
+ * bottom edge open for the scrubber + a wider map area.
+ */
+
+.tabbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: stretch;
+  /* Above the sheet (z=21) so a tab tap can switch sheets even while a
+     sheet is open. */
+  z-index: 22;
+  background: var(--bg-overlay);
+  border-top: 1px solid var(--line-mid);
+  backdrop-filter: blur(8px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  pointer-events: auto;
+}
+
+.tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 56px;
+  padding: 6px 4px;
+  background: transparent;
+  border: none;
+  /* Active tab's top accent line; transparent by default so each tab
+     is the same height as the active one (no jump when switching). */
+  border-top: 2px solid transparent;
+  color: var(--txt-dim);
+  font-family: var(--mono-display);
+  cursor: pointer;
+  position: relative;
+  transition: color 120ms ease;
+  /* Disable iOS double-tap zoom on the tabbar buttons specifically. */
+  touch-action: manipulation;
+}
+
+.tab:active { background: rgba(122, 240, 200, 0.06); }
+
+.tab.active {
+  color: var(--phos);
+  border-top-color: var(--phos);
+  /* Brighter highlight than the previous 0.08 wash + faint inner
+     glow so the active tab visibly "lifts" out of the bar. The 2px
+     phosphor top border now reads as a deliberate underline rather
+     than a near-invisible accent. */
+  background: rgba(122, 240, 200, 0.18);
+  box-shadow: inset 0 1px 0 var(--phos-dim);
+}
+
+.tab.active .tab-glyph {
+  text-shadow: 0 0 6px var(--phos-glow);
+}
+
+.tab-glyph {
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+  line-height: 1;
+}
+
+.tab-label {
+  font-family: var(--mono-body);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--txt-mute);
+  line-height: 1;
+}
+
+.tab.active .tab-label { color: var(--phos); opacity: 0.85; }
+
+.tab-badge {
+  position: absolute;
+  top: 4px;
+  /* Centred to the right of the glyph column so the badge feels tied
+     to the icon rather than to the whole tab. */
+  right: calc(50% - 22px);
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--warn);
+  color: var(--bg-void);
+  font-family: var(--mono-body);
+  font-size: 9px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.tab-badge.ready {
+  background: var(--phos);
+  box-shadow: 0 0 6px var(--phos-glow);
+}
+
+/* --------- Floating map-tools cluster (secondary nav) --------- */
+/*
+ * Small floating buttons docked to the top-right just below the HUD.
+ * Find-queen, fit-map, zoom in/out (desktop only), help.
+ *
+ * Smaller than the tabbar buttons so they read as secondary tools.
+ * Anchored to the top so the bottom thumb zone is reserved for the
+ * tabbar.
+ */
+
+.map-tools {
+  position: fixed;
+  right: 8px;
+  top: calc(50px + env(safe-area-inset-top, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 10;
+  pointer-events: none;
+}
+.map-tools > * { pointer-events: auto; }
+
+.map-tool {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  background: var(--bg-overlay);
+  border: 1px solid var(--line-mid);
+  border-radius: 2px;
+  backdrop-filter: blur(6px);
+  color: var(--txt-dim);
+  font-family: var(--mono-display);
+  font-size: 17px;
+  letter-spacing: 0;
+  cursor: pointer;
+  padding: 0;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+  touch-action: manipulation;
+}
+
+.map-tool:hover { color: var(--phos); border-color: var(--phos); }
+/* Touch feedback that also works without hover (mobile). */
+.map-tool:active { transform: scale(0.94); color: var(--phos); border-color: var(--phos); background: rgba(122, 240, 200, 0.12); }
+.map-tool.active { color: var(--phos); border-color: var(--phos); background: rgba(122, 240, 200, 0.12); }
+
+/* +/− zoom buttons are pointless on touch (pinch handles it). Hide
+   them by default; the desktop breakpoint below re-enables them. */
+.map-tool.desktop-only { display: none; }
+
+@media (min-width: 720px) {
+  .map-tool.desktop-only { display: grid; }
+  .map-tools {
+    /* On desktop the tabbar moves to the right side and the map-tools
+       cluster moves a bit further inward to clear it. */
+    right: 80px;
+    top: 72px;
+  }
+}
+
+/* --------- Tab bar: desktop polish --------- */
+/*
+ * Mobile-first: the tabbar stays at the bottom on every viewport. On
+ * wide screens we just centre it and cap the width so a 27" monitor
+ * doesn't stretch the tabs into letterboxes. The sheet also caps its
+ * width and rises from the bottom so the spatial model matches the
+ * mobile build the user is going to wrap into a native app.
+ */
+@media (min-width: 720px) {
+  .tabbar {
+    /* Centre and clamp. The bar still hugs the bottom — desktop is
+       just a wider phone. */
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    width: min(560px, calc(100vw - 32px));
+    border: 1px solid var(--line-mid);
+    border-radius: 8px 8px 0 0;
+    bottom: 0;
+  }
+}
+
+
+/* --------- Time-travel frame tint --------- */
+/*
+ * Full-viewport wash shown whenever the displayed world is off-live.
+ * Past = violet (archive footage); future = cyan (projection). A
+ * vignette concentrates the tint at the frame edges so the map centre
+ * stays legible, and a slow-drifting scanline field gives the frame a
+ * "recorded signal" texture. Both layers are GPU-composited
+ * gradients — no per-frame JS.
+ */
+
+/* Full-width status banner pinned to the top edge — connection loss,
+   sim-version mismatch. Non-interactive; sits above the HUD. */
+.conn-banner {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  max-width: calc(100vw - 16px);
+  padding: 5px 14px;
+  background: rgba(120, 30, 30, 0.92);
+  color: var(--txt);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  text-align: center;
+  border-radius: 0 0 8px 8px;
+  pointer-events: none;
+}
+
+.timetint {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  --tint: 199, 155, 251; /* default: past violet (rgb triplet) */
+  opacity: 0;
+  animation: timetint-in 360ms ease forwards;
+  overflow: hidden;
+}
+.timetint.fwd { --tint: 155, 220, 251; }
+@keyframes timetint-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* Edge vignette in the direction colour. */
+.timetint::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse at 50% 48%,
+    transparent 52%,
+    rgba(var(--tint), 0.07) 78%,
+    rgba(var(--tint), 0.22) 100%
+  );
+}
+/* Drifting scanlines — oversized so the translate loop never shows
+   an edge; 8s loop, two-line period. */
+.timetint::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -64px;
+  bottom: -64px;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(var(--tint), 0.045) 0 1px,
+    transparent 1px 5px
+  );
+  animation: timetint-drift 8s linear infinite;
+}
+@keyframes timetint-drift {
+  from { transform: translateY(0); }
+  to { transform: translateY(64px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .timetint::after { animation: none; }
+}
+
+/* --------- Time Machine (minimal draggable pill) --------- */
+
+/* Thin full-width track, only visible while dragging the pill. */
+.timepill-track {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  /* Vertically centred on the pill: pill bottom (64px) + half its
+     34px height − half this track's 2px height = 80px. Keep in sync
+     with .timepill's bottom/min-height. */
+  bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+  height: 2px;
+  background: var(--line-mid);
+  border-radius: 2px;
+  z-index: 8;
+  opacity: 0;
+  transition: opacity 140ms ease;
+  pointer-events: none;
+}
+.timepill-track.dragging { opacity: 0.8; }
+/* LIVE divider — the one mark the track keeps: where "now" sits, so a
+   drag knows which side of live it's on. Deliberately quiet (hairline,
+   no glow) so it reads as a boundary, not an event marker. */
+.timepill-track::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  left: var(--live-pct, 60%);
+  width: 1px;
+  background: var(--phos);
+  opacity: 0.5;
+}
+@media (min-width: 720px) {
+  /* Desktop pill sits at bottom 70px → centre at 87px − 1px. */
+  .timepill-track { bottom: 86px; }
+}
+
+/* The pill: the whole control. Bottom-centre, above the tab bar. */
+.timepill {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+  z-index: 9;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 14px;
+  background: var(--bg-overlay);
+  border: 1px solid var(--line-mid);
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+  cursor: grab;
+  touch-action: none;
+  font-family: var(--mono-display);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--txt-dim);
+  font-variant-numeric: tabular-nums;
+  pointer-events: auto;
+  user-select: none;
+}
+@media (min-width: 720px) {
+  .timepill { bottom: 70px; }
+}
+.timepill.dragging { cursor: grabbing; }
+.timepill-glyph { color: var(--txt-mute); }
+.timepill-text { min-width: 28px; text-align: center; }
+
+/* Idle/live = quiet phosphor; scrubbed = direction-coloured with a
+   soft instrument glow so the chronometer reads as ENGAGED. */
+.timepill.fwd,
+.timepill.back {
+  box-shadow:
+    0 0 14px -4px currentColor,
+    inset 0 0 8px -6px currentColor;
+}
+.timepill.fwd { color: var(--scrub-future); border-color: var(--scrub-future); }
+.timepill.fwd .timepill-glyph { color: var(--scrub-future); }
+.timepill.back { color: var(--scrub-past); border-color: var(--scrub-past); }
+.timepill.back .timepill-glyph { color: var(--scrub-past); }
+
+/* --------- Bottom sheet --------- */
+
+.sheet-backdrop {
+  position: fixed;
+  /* Don't cover the tabbar — tapping a tab while a sheet is open
+     should switch sheets, not be eaten by the backdrop. */
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+  background: rgba(2, 8, 18, 0.25);
+  z-index: 20;
+  animation: fadeIn 160ms ease-out;
+  /* Visual dim only — never intercepts pointer events. Taps and
+     drags on the map underneath pass through, so the user can
+     drag-launch from one outpost to another without first closing
+     the sheet. Close affordances: handle bar, X button, Esc, or
+     tapping an outpost (which opens its sheet, replacing the
+     current one). */
+  pointer-events: none;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  /* Sit above the bottom tabbar so the user can switch between sheets
+     without closing the current one first. Stack order from bottom up:
+     safe-area → tabbar (56px) → sheet. The scrubber lives at 64px from
+     the bottom (above the tabbar) but a sheet hides it behind the
+     header, which is fine since the user is now focused on the sheet. */
+  bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+  z-index: 21;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--line-strong);
+  border-radius: 14px 14px 0 0;
+  /* Cap height so the map remains visible above the sheet — the
+     player still wants to see what's happening on the map while
+     reading sheet contents. ~55vh strikes the balance: enough room
+     for combat previews + cargo sliders without dominating the
+     screen. Sheet body scrolls within. */
+  max-height: 55vh;
+  display: flex;
+  flex-direction: column;
+  animation: slideUp 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow:
+    0 -1px 0 var(--phos-dim),
+    0 -10px 40px rgba(0, 0, 0, 0.5);
+}
+
+/* Desktop & tablet: dock the sheet to the right as a sidebar card.
+   This leaves the central map fully visible and interactive while
+   the player reads the outpost / sub / fleet details on the side.
+   Mobile keeps the bottom-sheet idiom (touch-friendly swipe-down). */
+@media (min-width: 720px) {
+  .sheet {
+    left: auto;
+    right: 12px;
+    top: 60px;
+    bottom: 84px;
+    width: 360px;
+    max-height: none;
+    border-radius: 4px;
+    border: 1px solid var(--line-strong);
+    border-top: 1px solid var(--line-strong);
+    animation: slideInRight 220ms cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  }
+  /* Hide the swipe handle on desktop — there's nothing to swipe; the
+     X button + Esc do the job. */
+  .sheet .sheet-handle { display: none; }
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); opacity: 0.4; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+.sheet-handle {
+  width: 44px;
+  height: 4px;
+  background: var(--line-strong);
+  border-radius: 999px;
+  /* Wrapper-padded tap target so the small visual handle still has a
+     full 44px touch surface (Apple HIG min). */
+  margin: 0 auto;
+  flex-shrink: 0;
+  padding: 12px 60px;
+  background-clip: content-box;
+  cursor: pointer;
+  box-sizing: content-box;
+}
+
+.sheet-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 4px 10px 4px 16px;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.sheet-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.sheet-header h2 {
+  margin: 0;
+  font-family: var(--mono-display);
+  font-size: 15px;
+  color: var(--phos);
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+  text-shadow: 0 0 6px var(--phos-glow);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.1;
+}
+
+.sheet-header .meta {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--txt-mute);
+  line-height: 1.2;
+}
+
+.sheet-close {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  background: transparent;
+  border: 1px solid var(--line-mid);
+  color: var(--txt-dim);
+  cursor: pointer;
+  border-radius: 2px;
+  font-family: var(--mono-display);
+  font-size: 22px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  transition: border-color 120ms, color 120ms, background 120ms;
+  touch-action: manipulation;
+}
+
+.sheet-close:hover {
+  border-color: var(--phos);
+  color: var(--phos);
+  background: rgba(122, 240, 200, 0.08);
+}
+
+.sheet-close:active {
+  transform: scale(0.95);
+}
+
+.sheet-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 16px 16px;
+  /* iOS home-bar safe area: don't park primary CTAs underneath it. */
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sheet-body::-webkit-scrollbar { width: 6px; }
+.sheet-body::-webkit-scrollbar-track { background: transparent; }
+.sheet-body::-webkit-scrollbar-thumb { background: var(--line-mid); border-radius: 999px; }
+
+@media (min-width: 720px) {
+  /* Desktop: the sheet docks to the right as a sidebar card (see the
+     `.sheet` rule above), leaving the central + left map fully visible
+     so the tapped outpost and its sonar ring stay on screen. The map
+     also pans the outpost into that clear area on open (revealOutpost).
+     Only the backdrop offset is tuned here. */
+  .sheet-backdrop {
+    bottom: 56px;
+  }
+}
+
+/* --------- Reusable bits inside sheets --------- */
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  border-bottom: 1px dotted var(--line-faint);
+  font-size: 12px;
+  line-height: 1.3;
+}
+.row:last-child { border-bottom: none; }
+.row .val { color: var(--txt-dim); font-variant-numeric: tabular-nums; text-align: right; }
+
+.section-title {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--txt-mute);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 8px;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  border: 1px solid var(--line-mid);
+  color: var(--txt-dim);
+  border-radius: 2px;
+  background: var(--bg-surface-2);
+}
+.tag.queen { border-color: var(--warn); color: var(--warn); }
+.tag.mine { border-color: var(--phos); color: var(--phos); }
+.tag.dormant { border-color: var(--txt-mute); color: var(--txt-mute); }
+.tag.enemy { border-color: var(--crit); color: var(--crit); }
+.tag.friendly { border-color: var(--phos); color: var(--phos); }
+
+.btn {
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-surface-2);
+  color: var(--txt);
+  cursor: pointer;
+  border-radius: 2px;
+  font-family: var(--mono-body);
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  text-align: center;
+  width: 100%;
+  transition: background 120ms, border-color 120ms, transform 80ms;
+}
+.btn:hover:not(:disabled) { background: var(--bg-surface); border-color: var(--phos); }
+.btn:active:not(:disabled) { transform: scale(0.98); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn.primary {
+  background: var(--phos);
+  color: var(--bg-void);
+  border-color: var(--phos);
+  font-weight: 700;
+}
+.btn.primary:hover:not(:disabled) {
+  background: #5fbfa6;
+  border-color: #5fbfa6;
+}
+
+.btn.ghost {
+  background: transparent;
+  color: var(--txt-dim);
+}
+
+.btn.danger {
+  border-color: var(--crit);
+  color: var(--crit);
+}
+
+/* Queue-row cancel: ghost by default, danger-red on intent (hover/active).
+   Reduces the visual hierarchy in the queue list — the row's amber/phosphor
+   left border already encodes urgency, the cancel button doesn't need to. */
+.btn.queue-cancel {
+  border-color: var(--line-mid);
+  color: var(--txt-dim);
+}
+.btn.queue-cancel:hover:not(:disabled),
+.btn.queue-cancel:active:not(:disabled) {
+  border-color: var(--crit);
+  color: var(--crit);
+  background: rgba(255, 84, 112, 0.08);
+}
+
+.btn-row {
+  display: flex;
+  gap: 8px;
+}
+.btn-row .btn { flex: 1; }
+
+/* Slider — driller picker */
+.slider {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--line-mid);
+  border-radius: 2px;
+}
+
+.slider-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.slider-head .label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--txt-mute);
+}
+
+.slider-head .value {
+  font-family: var(--mono-display);
+  font-size: 22px;
+  color: var(--phos);
+  text-shadow: 0 0 6px var(--phos-glow);
+}
+
+.slider-head .max {
+  font-size: 10px;
+  color: var(--txt-mute);
+  letter-spacing: 0.1em;
+  margin-left: 4px;
+}
+
+.slider input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 28px;
+  background: transparent;
+  cursor: pointer;
+  touch-action: none;
+}
+.slider input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--phos) 0%,
+    var(--phos) var(--p, 50%),
+    var(--line-mid) var(--p, 50%)
+  );
+  border-radius: 2px;
+}
+.slider input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 26px;
+  background: var(--phos);
+  border-radius: 2px;
+  margin-top: -11px;
+  box-shadow: 0 0 8px var(--phos-glow);
+}
+.slider input[type='range']::-moz-range-track {
+  height: 4px;
+  background: var(--line-mid);
+  border-radius: 2px;
+}
+.slider input[type='range']::-moz-range-thumb {
+  width: 18px;
+  height: 26px;
+  background: var(--phos);
+  border: none;
+  border-radius: 2px;
+}
+
+.slider-foot {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--txt-mute);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.slider .preset-row {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.preset-btn {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--line-mid);
+  color: var(--txt-dim);
+  font-family: var(--mono-body);
+  font-size: 11px;
+  padding: 6px 0;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.preset-btn:hover { border-color: var(--phos); color: var(--phos); }
+.preset-btn.active { background: rgba(122, 240, 200, 0.12); color: var(--phos); border-color: var(--phos); }
+
+/* Toggle pill */
+.toggle-row {
+  display: flex;
+  gap: 6px;
+  background: var(--bg-surface-2);
+  padding: 4px;
+  border-radius: 4px;
+  border: 1px solid var(--line-mid);
+}
+.toggle {
+  flex: 1;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  color: var(--txt-dim);
+  cursor: pointer;
+  font-family: var(--mono-body);
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  border-radius: 2px;
+}
+.toggle.active { background: var(--phos); color: var(--bg-void); font-weight: 700; }
+
+/* --------- Combat preview --------- */
+
+.preview {
+  background: var(--bg-surface-2);
+  border: 1px solid var(--line-mid);
+  border-radius: 2px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Single-line compact summary, click to expand for details. */
+.preview-summary {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.preview-summary .sym {
+  font-family: var(--mono-display);
+  font-size: 16px;
+}
+.preview-summary .text {
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.preview-summary .math {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: var(--mono-display);
+  font-size: 12px;
+}
+.preview-summary .math .op {
+  color: var(--txt-mute);
+  font-size: 10px;
+}
+.preview-summary .when {
+  font-family: var(--mono-display);
+  font-size: 11px;
+  color: var(--phos);
+  letter-spacing: 0.04em;
+}
+.preview-summary .chev {
+  color: var(--txt-mute);
+  font-size: 10px;
+}
+
+.preview-summary.win  { border-left: 2px solid var(--phos); color: var(--phos); }
+.preview-summary.lose { border-left: 2px solid var(--crit); color: var(--crit); }
+.preview-summary.tie  { border-left: 2px solid var(--warn); color: var(--warn); }
+.preview-summary.neutral { border-left: 2px solid var(--line-strong); }
+
+.preview-detail {
+  border-top: 1px dashed var(--line-mid);
+  padding: 6px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.preview-head .title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--txt-mute);
+}
+
+.preview-head .when {
+  font-family: var(--mono-display);
+  font-size: 11px;
+  color: var(--phos);
+  text-shadow: 0 0 6px var(--phos-glow);
+  letter-spacing: 0.06em;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 80px 1fr 60px;
+  gap: 10px;
+  align-items: center;
+  font-size: 11px;
+}
+
+.bar-row .who {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--txt-mute);
+}
+
+.bar {
+  height: 14px;
+  background: var(--line-faint);
+  border-radius: 1px;
+  position: relative;
+  overflow: hidden;
+}
+
+.bar .fill {
+  position: absolute;
+  inset: 0;
+  width: var(--w, 0%);
+  background: var(--c, var(--phos));
+  transition: width 200ms ease-out;
+}
+
+.bar.shielded::after {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0;
+  right: 0;
+  width: var(--shield-w, 0%);
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(255, 255, 255, 0.18) 0 3px,
+    transparent 3px 6px
+  );
+}
+
+.bar-row .num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  font-family: var(--mono-display);
+  font-size: 13px;
+  color: var(--txt);
+}
+
+.preview-outcome {
+  padding: 10px 12px;
+  border-radius: 2px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.preview-outcome .sym {
+  font-family: var(--mono-display);
+  font-size: 18px;
+}
+
+.preview-outcome strong {
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.preview-outcome .detail {
+  color: var(--txt-dim);
+  font-size: 11px;
+}
+
+.preview-outcome.win {
+  background: rgba(122, 240, 200, 0.1);
+  border: 1px solid var(--phos);
+  color: var(--phos);
+}
+.preview-outcome.win .detail { color: var(--phos); opacity: 0.85; }
+
+.preview-outcome.lose {
+  background: rgba(255, 84, 112, 0.08);
+  border: 1px solid var(--crit);
+  color: var(--crit);
+}
+.preview-outcome.lose .detail { color: var(--crit); opacity: 0.85; }
+
+.preview-outcome.tie {
+  background: rgba(255, 181, 71, 0.08);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+}
+
+.preview-outcome.neutral {
+  background: var(--bg-surface);
+  border: 1px solid var(--line-mid);
+  color: var(--txt-dim);
+}
+
+/* --------- Chat --------- */
+
+.chat-log {
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-void);
+  border: 1px solid var(--line-faint);
+  border-radius: 2px;
+}
+
+.chat-msg {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.chat-from {
+  font-family: var(--mono-display);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+.chat-dm {
+  font-size: 10px;
+  color: var(--phos-dim);
+  letter-spacing: 0.1em;
+}
+.chat-text { color: var(--txt); word-break: break-word; }
+.chat-time {
+  font-size: 9px;
+  color: var(--txt-mute);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hail icon on enemy outpost sheets — sits inline with the status
+   chips; border/text take the owner's identity colour so the action
+   reads as "talk to THEM". Compact by design: messaging is a side
+   path, not the sheet's primary action. */
+.hail-icon {
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  margin-left: 2px;
+  background: transparent;
+  border: 1px solid;
+  border-radius: 2px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  /* Visual stays compact; touch surface extends to ~40px. */
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+}
+.hail-icon::after {
+  content: '';
+  position: absolute;
+  inset: -9px -11px;
+}
+.hail-icon:hover { filter: brightness(1.35); background: rgba(255, 255, 255, 0.06); }
+
+/* --------- Conversation list ----------------------------------------- */
+/*
+ * One row per thread: avatar · name + last-message preview · time +
+ * unread pill. ALL-STATIONS is pinned first with the ⊕ broadcast
+ * avatar; players you haven't talked to yet render as quiet
+ * "start a conversation" rows below the active threads.
+ */
+
+.convo-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 8px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line-faint);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.convo-row:hover { background: rgba(122, 240, 200, 0.05); }
+.convo-row:focus-visible {
+  outline: 1px solid var(--phos);
+  outline-offset: -1px;
+}
+.convo-row.convo-gone { opacity: 0.5; }
+
+.convo-avatar {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1.5px solid;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+.convo-avatar-all { font-size: 15px; font-weight: 400; }
+
+.convo-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.convo-name {
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.convo-sub {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--txt-mute);
+}
+.convo-preview {
+  font-size: 12px;
+  color: var(--txt-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.convo-row.has-unread .convo-preview { color: var(--txt); }
+.convo-start { color: var(--txt-mute); font-style: italic; }
+
+.convo-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.convo-time {
+  font-size: 10px;
+  color: var(--txt-mute);
+  font-variant-numeric: tabular-nums;
+}
+.convo-unread {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--warn);
+  color: var(--bg-void);
+  font-size: 10px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+
+/* --------- Thread view ----------------------------------------- */
+
+.thread-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0 10px;
+  border-bottom: 1px solid var(--line-faint);
+  margin-bottom: 8px;
+}
+.thread-back {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  background: transparent;
+  border: 1px solid var(--line-mid);
+  border-radius: 4px;
+  color: var(--txt-dim);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.thread-back:hover { border-color: var(--phos); color: var(--phos); }
+.thread-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  min-width: 0;
+}
+
+/* Bubbles — yours right in phosphor wash, theirs left in surface tint.
+   The broadcast channel labels each foreign bubble with its sender. */
+.chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bubble {
+  max-width: 82%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line-mid);
+  background: var(--bg-surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.bubble-mine {
+  align-self: flex-end;
+  background: rgba(122, 240, 200, 0.08);
+  border-color: var(--phos-dim);
+  border-bottom-right-radius: 2px;
+}
+.bubble-theirs {
+  align-self: flex-start;
+  border-bottom-left-radius: 2px;
+}
+.bubble-from {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.bubble-text {
+  color: var(--txt);
+  font-size: 13px;
+  line-height: 1.4;
+  word-break: break-word;
+  /* Multiline messages (shift+enter) render their line breaks. */
+  white-space: pre-wrap;
+}
+.bubble-time {
+  font-size: 9px;
+  color: var(--txt-mute);
+  font-variant-numeric: tabular-nums;
+  align-self: flex-end;
+}
+
+/* --------- @ mentions in chat ----------------------------------------- */
+.mention-chip {
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  padding: 0 5px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  margin: 0 1px;
+  color: var(--phos);
+  line-height: 1.2;
+  vertical-align: baseline;
+}
+.mention-chip-outpost { color: var(--phos); }
+.mention-chip-outpost:hover { background: rgba(122, 240, 200, 0.12); }
+.mention-chip-player:hover { background: rgba(255, 255, 255, 0.08); }
+
+/* Autocomplete popover when typing @ in the composer. Anchored above
+   the input so it doesn't get clipped by the bottom of the sheet. */
+.mention-popover {
+  /* Position is set inline (portal'd to body) so it escapes the
+     sheet's overflow-clipped scroll container. */
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--bg-overlay);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 2px 0;
+  z-index: 80;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.45);
+}
+.mention-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 6px 10px;
+  color: var(--txt);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.mention-row.active { background: rgba(122, 240, 200, 0.12); }
+.mention-row-name { text-transform: uppercase; letter-spacing: 0.02em; }
+.mention-row-token { color: var(--txt-mute); font-size: 10px; letter-spacing: 0.04em; }
+.mention-kind-tag {
+  font-size: 11px;
+  text-align: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  width: 18px;
+}
+.mention-tag-outpost { color: var(--phos); }
+.mention-tag-player { color: var(--txt-dim); }
+
+.chat-input {
+  display: flex;
+  /* Bottom-align so the compact send icon stays anchored while the
+     textarea auto-grows upward. */
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.chat-input > select,
+.chat-input > input,
+.chat-input > textarea,
+.chat-input > button {
+  font-family: var(--mono-body);
+  font-size: 13px;
+  background: var(--bg-surface-2);
+  color: var(--txt);
+  border: 1px solid var(--line-mid);
+  border-radius: 2px;
+  padding: 10px;
+}
+
+/* Multiline composer — grows with content up to ~5 lines, then
+   scrolls. Resize handle off (auto-grow handles it). */
+.chat-input > textarea {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  max-height: 110px;
+  min-height: 44px;
+  line-height: 1.4;
+  overflow-y: auto;
+}
+.chat-input textarea:focus {
+  outline: 1px solid var(--phos-dim);
+  border-color: var(--phos);
+}
+
+.chat-input select {
+  appearance: none;
+  padding-right: 24px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%237af0c8' stroke-width='1.2'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+
+.chat-input input:focus,
+.chat-input select:focus {
+  outline: 1px solid var(--phos-dim);
+  border-color: var(--phos);
+}
+
+.chat-input > button {
+  cursor: pointer;
+  background: var(--phos);
+  border-color: var(--phos);
+  color: var(--bg-void);
+}
+
+/* Compact icon send — a 44px square (touch minimum) anchored to the
+   composer's bottom edge. */
+.chat-send {
+  width: 44px;
+  height: 44px;
+  padding: 0 !important;
+  font-size: 15px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+.chat-send:disabled {
+  background: var(--bg-surface-2);
+  border-color: var(--line-mid);
+  color: var(--txt-mute);
+  cursor: default;
+}
+
+/* --------- Event log row --------- */
+/*
+ * Three-column grid: timestamp · kind tag · summary.
+ * Fixed widths on the first two cols so the summary wraps cleanly
+ * and tags don't push the time column around per row.
+ */
+.event-row {
+  /* Two stacked lines: meta (time · tag · jump) on top, summary below
+     at full width — kind tags in a side column ate a third of the
+     sheet and squeezed summaries into wrapping slivers. */
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  border-bottom: 1px dotted var(--line-faint);
+  font-size: 12px;
+}
+.event-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.event-head .event-jump { margin-left: auto; }
+.event-row:last-child { border-bottom: none; }
+.event-time {
+  font-family: var(--mono-display);
+  font-size: 11px;
+  color: var(--txt-mute);
+  font-variant-numeric: tabular-nums;
+}
+.event-tag {
+  font-size: 9px;
+  justify-self: start;
+  white-space: nowrap;
+}
+.event-summary {
+  color: var(--txt);
+  line-height: 1.35;
+}
+.event-jump {
+  background: transparent;
+  border: 1px solid var(--line-faint);
+  color: var(--phos);
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  /* Visual stays 22px; the touch surface extends to ~40px. */
+  position: relative;
+}
+.event-jump::after {
+  content: '';
+  position: absolute;
+  inset: -9px;
+}
+.event-jump:hover { border-color: var(--phos); }
+
+/* Severity accents — a 2px left border on each row + tinted tag,
+   readable at a glance without dominating the summary text. The
+   border is INSIDE the dotted bottom-border via padding so rows still
+   align horizontally regardless of severity. */
+.event-row { padding-left: 8px; border-left: 2px solid transparent; }
+.event-row-bad { border-left-color: var(--crit); }
+.event-row-good { border-left-color: var(--phos); }
+.event-row-neutral { border-left-color: var(--warn); }
+
+.event-tag-bad { color: var(--crit); border-color: var(--crit); }
+.event-tag-good { color: var(--phos); border-color: var(--phos); }
+.event-tag-neutral { color: var(--warn); border-color: var(--warn); }
+
+/* --------- Queue / orders rows --------- */
+/*
+ * Two sections: PENDING (warn rail — the 10-minute abort fuse) and
+ * SCHEDULED (phos rail — Time-Machine orders). Row anatomy:
+ *   glyph · label + timing line · actions (right-pinned)
+ */
+
+.queue-section { margin: 10px 0 4px; }
+.queue-section-pending { color: var(--warn); }
+.queue-section-sched { color: var(--phos); }
+
+.queue-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 10px;
+  border-bottom: 1px solid var(--line-faint);
+  border-left: 2px solid transparent;
+}
+.queue-row:last-child { border-bottom: none; }
+.queue-row-pending { border-left-color: var(--warn); }
+.queue-row-sched { border-left-color: var(--phos); }
+.queue-row-dim { opacity: 0.45; }
+
+.queue-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.queue-label {
+  color: var(--txt);
+  font-size: 13px;
+  /* Wrap rather than ellipsize — the route's destination is the most
+     important word in the row and must never be the part cut off. */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+}
+/* Kind tag — names the command (LAUNCH / DRILL / HIRE / …) so a row is
+   identifiable before reading the description. State-colored: warn
+   while in the cancel fuse, phos when scheduled. */
+.queue-kind-tag {
+  flex: 0 0 auto;
+  font-size: 9px;
+}
+.queue-kind-pending { color: var(--warn); border-color: var(--warn); }
+.queue-kind-sched { color: var(--phos); border-color: var(--phos); }
+
+/* Structured description atoms. Outpost names get the map's label
+   voice (uppercase, letterspaced) so routes read as places, not prose. */
+.queue-place {
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 11px;
+  color: var(--txt);
+}
+.queue-arrow {
+  color: var(--phos);
+  margin: 0 5px;
+}
+.queue-cargo { color: var(--txt-dim); font-size: 12px; }
+.queue-spec { color: var(--txt); }
+.queue-owner { font-size: 11px; }
+.queue-gone { color: var(--txt-mute); font-style: italic; }
+.queue-when {
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+}
+.queue-when-pending { color: var(--warn); }
+.queue-when-sched { color: var(--phos); opacity: 0.85; }
+
+.queue-actions {
+  display: inline-flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.queue-act { width: auto; padding: 6px 12px; }
+
+/* --------- Events filter chips ----------------------------------------- */
+.event-filter {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.event-filter-chip {
+  background: transparent;
+  border: 1px solid var(--line-faint);
+  color: var(--txt-mute);
+  cursor: pointer;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 3px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.event-filter-chip:hover { color: var(--txt); border-color: var(--line); }
+.event-filter-chip.active {
+  color: var(--phos);
+  border-color: var(--phos);
+  background: rgba(122, 240, 200, 0.08);
+}
+.event-filter-count {
+  font-size: 9px;
+  color: var(--txt-mute);
+  font-variant-numeric: tabular-nums;
+}
+.event-filter-chip.active .event-filter-count { color: var(--phos); }
+
+/* --------- Fleet leaderboard cards --------- */
+/*
+ * One card per player; the race bar toward 200 kg is the hero. Three
+ * stacked lines so nothing ever truncates on a 360px viewport:
+ *   identity row  →  kg right-aligned
+ *   race bar      →  full card width, finish tape at 100%
+ *   asset row     →  factories · generators · mines · drillers · energy · rate
+ */
+
+.lb-card {
+  padding: 10px 10px 9px;
+  border-bottom: 1px solid var(--line-faint);
+  font-variant-numeric: tabular-nums;
+}
+.lb-card:last-of-type { border-bottom: none; }
+.lb-card-me {
+  background: rgba(122, 240, 200, 0.05);
+  box-shadow: inset 2px 0 0 var(--phos-dim);
+}
+.lb-card-out { opacity: 0.45; }
+
+.lb-card-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.lb-rank {
+  width: 14px;
+  text-align: right;
+  font-family: var(--mono-display);
+  font-size: 11px;
+  color: var(--txt-mute);
+  flex: 0 0 auto;
+}
+.lb-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.lb-id {
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--txt);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.lb-card-me .lb-id { color: var(--phos); }
+.lb-id strong { font-weight: 700; letter-spacing: 0.08em; margin-right: 2px; }
+.lb-you,
+.lb-out {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  border-radius: 2px;
+  line-height: 1.1;
+}
+.lb-you { color: var(--phos); border: 1px solid var(--phos); }
+.lb-out { color: var(--txt-mute); border: 1px solid var(--line-mid); }
+.lb-kg {
+  margin-left: auto;
+  font-family: var(--mono-display);
+  font-size: 16px;
+  color: var(--txt);
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+.lb-unit {
+  font-size: 10px;
+  color: var(--txt-mute);
+  letter-spacing: 0.06em;
+  margin-left: 2px;
+  font-weight: 400;
+}
+
+/* The race bar — same grammar as the HUD victory meter, sheet scale. */
+.lb-race {
+  position: relative;
+  height: 4px;
+  margin: 8px 0 7px;
+  background: var(--line-faint);
+  border-radius: 2px;
+  overflow: visible;
+}
+.lb-race > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  transition: width 400ms ease;
+}
+/* Finish tape at 200 kg. */
+.lb-race::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--txt-dim);
+  opacity: 0.7;
+}
+
+.lb-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+/* Labeled stat grid — five value-over-label cells. Values bright and
+   tabular; labels 8px muted uppercase so the row scans as numbers
+   first, vocabulary second. */
+.lb-stat-grid {
+  /* Wrapping grid — the old flex row clipped the trailing cells
+     (energy/rate) behind overflow:hidden whenever the sheet was
+     narrower than six fixed cells (desktop side panel, small phones).
+     auto-fit lets the six stats reflow to 2×3 instead of truncating. */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+  gap: 8px 12px;
+  width: 100%;
+  min-width: 0;
+}
+.lb-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.lb-cell-value {
+  font-family: var(--mono-body);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--txt);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.lb-cell-value.accent { color: var(--phos); }
+.lb-cell-glyph {
+  color: var(--txt-mute);
+  font-size: 10px;
+  margin-right: 3px;
+}
+.lb-cell-label {
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--txt-mute);
+  white-space: nowrap;
+}
+
+/* Player switcher */
+.player-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.player-list .item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--line-mid);
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.player-list .item:hover { border-color: var(--phos); }
+.player-list .item.active { border-color: var(--phos); background: rgba(122, 240, 200, 0.08); }
+.player-list .item .swatch { width: 14px; height: 14px; border-radius: 999px; box-shadow: 0 0 6px currentColor; }
+
+/* --------- Specialist chip --------- */
+/*
+ * Used wherever a specialist is listed (outpost sheet, sub popover,
+ * launch cargo picker, hire offerings, combat-preview breakdown).
+ * Collapsed: shows the glyph + name + one-line short description +
+ * status badge + chevron. Tap to expand the full effect under the
+ * row. Always renders as a button so any list of specialist chips is
+ * keyboard-navigable.
+ */
+
+.spec-chip {
+  appearance: none;
+  background: transparent;
+  border: none;
+  border-bottom: 1px dotted var(--line-faint);
+  padding: 6px 0;
+  margin: 0;
+  text-align: left;
+  cursor: pointer;
+  color: var(--txt);
+  font-family: var(--mono-body);
+  font-size: 12px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.spec-chip:last-child { border-bottom: none; }
+.spec-chip:active { background: rgba(122, 240, 200, 0.04); }
+.spec-chip.open { background: rgba(122, 240, 200, 0.04); }
+
+.spec-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.spec-chip-glyph {
+  font-family: var(--mono-display);
+  font-size: 16px;
+  color: var(--phos);
+  flex: 0 0 18px;
+  text-align: center;
+  line-height: 1;
+}
+
+.spec-chip-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.spec-chip-name {
+  color: var(--txt);
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+}
+
+.spec-chip-short {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--txt);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.spec-chip-status {
+  flex: 0 0 auto;
+  margin-right: 6px;
+  color: var(--txt-dim);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.spec-chip-chev {
+  flex: 0 0 auto;
+  width: 12px;
+  text-align: center;
+  color: var(--txt-mute);
+  font-size: 11px;
+  font-family: var(--mono-body);
+}
+
+.spec-chip-long {
+  margin-left: 28px;
+  color: var(--txt-dim);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  padding-top: 2px;
+  padding-bottom: 4px;
+  border-left: 2px solid var(--line-mid);
+  padding-left: 8px;
+}
+
+.release-btn {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--warn);
+  border-radius: 3px;
+  color: var(--warn);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.release-btn:hover { background: rgba(255, 200, 60, 0.12); }
+.release-btn:active { background: rgba(255, 200, 60, 0.22); }
+
+/* Inline promote on outpost specialist rows — same chip-scale shape as
+   the release button, phosphor because it's a positive action. */
+.promote-mini {
+  border-color: var(--phos);
+  color: var(--phos);
+}
+.promote-mini:hover { background: rgba(122, 240, 200, 0.12); }
+.promote-mini:active { background: rgba(122, 240, 200, 0.22); }
+
+/* Help / empty / hint */
+.help {
+  font-size: 11px;
+  color: var(--txt-mute);
+  line-height: 1.4;
+  font-style: italic;
+}
+.empty {
+  color: var(--txt-mute);
+  font-style: italic;
+  font-size: 11px;
+  text-align: center;
+  padding: 20px;
+}
+
+/* --------- Toast stack --------- */
+
+.toasts {
+  position: fixed;
+  /* Mobile: hover just above the scrubber strip (which sits at
+     bottom: 64 + safe-area). Tabbar + scrubber together reserve
+     ~64 + 48 + 8 = 120px from the bottom; toasts stack upward from
+     there. */
+  left: 8px;
+  right: 8px;
+  bottom: calc(124px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 6px;
+  z-index: 15;
+  pointer-events: none;
+  max-width: min(380px, calc(100vw - 16px));
+}
+
+@media (min-width: 720px) {
+  .toasts {
+    /* Desktop: tuck above the stacked scrubber + tabbar at the bottom
+       (tabbar ~56, scrubber ~48 + 16 gap = ~120). */
+    left: 16px;
+    right: auto;
+    bottom: 124px;
+    max-width: 380px;
+  }
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 2px;
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  border: 1px solid;
+  border-left-width: 3px;
+  font-family: var(--mono-body);
+  animation: slideInLeft 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideInLeft {
+  from { transform: translateX(-10px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.toast-sym {
+  font-family: var(--mono-display);
+  font-size: 14px;
+  width: 18px;
+  height: 18px;
+  border: 1px solid;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.toast-text {
+  flex: 1;
+  min-width: 0;
+  /* Clamp at two lines everywhere: one-line ellipsis on phones cut
+     off actionable text ("…redirect now"), and unclamped multi-row
+     toasts swallow the map. Two lines fits every current toast. */
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.toast-info {
+  background: rgba(122, 240, 200, 0.08);
+  border-color: var(--phos);
+  color: var(--phos);
+}
+.toast-info .toast-sym { border-color: var(--phos); }
+
+.toast-success {
+  background: rgba(122, 240, 200, 0.14);
+  border-color: var(--phos);
+  color: var(--phos);
+}
+.toast-success .toast-sym { border-color: var(--phos); color: var(--phos); }
+
+.toast-warn {
+  background: rgba(255, 181, 71, 0.12);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.toast-warn .toast-sym { border-color: var(--warn); color: var(--warn); }
+
+.toast-error {
+  background: rgba(255, 84, 112, 0.14);
+  border-color: var(--crit);
+  color: var(--crit);
+}
+.toast-error .toast-sym { border-color: var(--crit); color: var(--crit); }
+
+.toast-overflow {
+  pointer-events: none;
+  align-self: flex-start;
+  font-family: var(--mono-display);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--txt-mute);
+  padding: 2px 6px;
+  background: var(--bg-overlay);
+  border: 1px dashed var(--line-mid);
+  border-radius: 2px;
+  backdrop-filter: blur(4px);
+}
+
+/* MapControls absorbed into .rail (the unified right rail). Legacy
+   .map-controls / .map-btn classes left out intentionally. */
+
+/* --------- Hire sheet rows --------- */
+
+/* --------- Roster rows (hire + promote) --------- */
+/*
+ * The tap anatomy is the whole point: the row BODY expands the full
+ * description (safe, exploratory), and committing requires the
+ * explicit labelled button on the right. Hire and promote share one
+ * shape so the sheet reads as a single roster.
+ */
+
+.roster-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 4px;
+  margin-bottom: 4px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--line-mid);
+  border-radius: 2px;
+}
+.roster-row.open { border-color: var(--line-strong); }
+
+.roster-body {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+.roster-body:hover { background: rgba(122, 240, 200, 0.05); }
+.roster-body:focus-visible {
+  outline: 1px solid var(--phos);
+  outline-offset: -1px;
+}
+
+.hire-glyph {
+  font-size: 18px;
+  color: var(--phos);
+  width: 20px;
+  text-align: center;
+}
+.roster-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.roster-title {
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--txt);
+  font-size: 13px;
+}
+.roster-sub {
+  font-size: 10px;
+  color: var(--txt-mute);
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.roster-chev {
+  color: var(--txt-mute);
+  font-size: 11px;
+}
+
+.roster-cta {
+  width: auto;
+  padding: 6px 14px;
+  flex: 0 0 auto;
+}
+
+/* Expanded description spans the full card width under both columns. */
+.roster-long {
+  grid-column: 1 / -1;
+  padding: 2px 8px 8px 42px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--txt-dim);
+  white-space: pre-line;
+}
+
+/* --------- Mode banner --------- */
+/*
+ * Single slim top-centre badge shown while the player is in a
+ * picker mode (launch / redirect / pirate-target). ESC always
+ * cancels — the keybinding text in the banner reminds the user.
+ */
+.mode-banner {
+  position: fixed;
+  top: 56px;
+  /* Mobile: span the strip between the left edge and the action FAB
+     column (60px reserved on the right). On desktop the rail is on the
+     right edge of the viewport, so the banner centres normally. */
+  left: 8px;
+  right: 60px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  white-space: nowrap;
+  justify-content: center;
+  background: var(--bg-overlay);
+  border: 1px solid var(--phos);
+  color: var(--phos);
+  border-radius: 2px;
+  font-family: var(--mono-display);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: lowercase;
+  backdrop-filter: blur(6px);
+  z-index: 12;
+  pointer-events: none;
+  animation: fadeIn 160ms ease-out;
+  box-shadow: 0 0 12px var(--phos-glow);
+}
+
+.mode-banner > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mode-banner .esc {
+  flex-shrink: 0;
+}
+
+/* Per-picker color so launch / redirect / pirate are distinguishable
+   at a glance. Same banner shape, three border colors. */
+.mode-banner.mode-banner-launch {
+  border-color: var(--phos);
+  color: var(--phos);
+  box-shadow: 0 0 12px var(--phos-glow);
+}
+.mode-banner.mode-banner-redirect {
+  border-color: var(--warn);
+  color: var(--warn);
+  box-shadow: 0 0 12px rgba(255, 181, 71, 0.3);
+}
+.mode-banner.mode-banner-pirate {
+  border-color: var(--crit);
+  color: var(--crit);
+  box-shadow: 0 0 12px rgba(255, 84, 112, 0.35);
+}
+
+@media (min-width: 720px) {
+  .mode-banner {
+    /* Desktop: re-centre on the viewport, content-sized. */
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    max-width: calc(100vw - 200px);
+    justify-content: flex-start;
+  }
+}
+
+/* Clickable variant (button element). Re-enables pointer events
+ * so the user can tap-to-cancel as well as press Escape. */
+.mode-banner-btn {
+  pointer-events: auto;
+  cursor: pointer;
+  font: inherit;
+}
+
+.mode-banner-btn:hover {
+  background: var(--bg-surface-2);
+}
+
+.mode-banner .esc {
+  color: var(--txt-mute);
+  letter-spacing: 0.18em;
+}
+
+.mode-banner .esc kbd {
+  font-family: var(--mono-body);
+  border: 1px solid var(--line-mid);
+  padding: 1px 4px;
+  margin-right: 4px;
+  border-radius: 2px;
+  color: var(--txt-dim);
+}
