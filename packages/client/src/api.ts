@@ -98,6 +98,24 @@ export interface OrderResponse {
   error?: string;
 }
 
+// ---------------------------------------------------------------------
+// Game scoping. The shell sets the active game before mounting the
+// in-game App; every order/state call below is then routed to
+// /api/g/<id>/…. The server derives the acting player from the
+// session's seat — the ownerId fields still present in bodies are
+// ignored outside DEV_MODE.
+// ---------------------------------------------------------------------
+
+let activeGameId = 0;
+
+export function setActiveGame(id: number): void {
+  activeGameId = id;
+}
+
+function g(path: string): string {
+  return `/api/g/${activeGameId}${path}`;
+}
+
 /**
  * POST/DELETE JSON and parse the `{ ok, error? }`-shaped response.
  *
@@ -134,79 +152,79 @@ function postJson<T extends { ok: boolean; error?: string }>(
 }
 
 export function postLaunch(body: LaunchBody): Promise<OrderResponse> {
-  return postJson('/api/orders/launch', body);
+  return postJson(g('/orders/launch'), body);
 }
 
 export function postHire(body: HireBody): Promise<OrderResponse> {
-  return postJson('/api/orders/hire', body);
+  return postJson(g('/orders/hire'), body);
 }
 
 export function postHireNow(body: HireBody): Promise<OrderResponse> {
-  return postJson('/api/orders/hire/now', body);
+  return postJson(g('/orders/hire/now'), body);
 }
 
 export function postPromote(body: PromoteBody): Promise<OrderResponse> {
-  return postJson('/api/orders/promote', body);
+  return postJson(g('/orders/promote'), body);
 }
 
 export function postPromoteNow(body: PromoteBody): Promise<OrderResponse> {
-  return postJson('/api/orders/promote/now', body);
+  return postJson(g('/orders/promote/now'), body);
 }
 
 export function postRedirect(body: RedirectBody): Promise<OrderResponse> {
-  return postJson('/api/orders/redirect', body);
+  return postJson(g('/orders/redirect'), body);
 }
 
 export function postCancelSub(body: CancelSubBody): Promise<OrderResponse> {
-  return postJson('/api/orders/cancel-sub', body);
+  return postJson(g('/orders/cancel-sub'), body);
 }
 
 export function postEditPreLaunchSub(
   body: EditPreLaunchSubBody,
 ): Promise<OrderResponse> {
-  return postJson('/api/orders/edit-prelaunch-sub', body);
+  return postJson(g('/orders/edit-prelaunch-sub'), body);
 }
 
 export function postPirateTarget(body: PirateTargetBody): Promise<OrderResponse> {
-  return postJson('/api/orders/pirate-target', body);
+  return postJson(g('/orders/pirate-target'), body);
 }
 
 /** Queue a redirect to fire at a future `executeAt` (Time Machine). */
 export function postQueueRedirect(
   body: QueueRedirectBody,
 ): Promise<OrderResponse> {
-  return postJson('/api/queue/redirect', body);
+  return postJson(g('/queue/redirect'), body);
 }
 
 /** Queue a pirate-target to fire at a future `executeAt` (Time Machine). */
 export function postQueuePirateTarget(
   body: QueuePirateTargetBody,
 ): Promise<OrderResponse> {
-  return postJson('/api/queue/pirate-target', body);
+  return postJson(g('/queue/pirate-target'), body);
 }
 
 export function postReleaseCaptive(body: ReleaseCaptiveBody): Promise<OrderResponse> {
-  return postJson('/api/orders/release-captive', body);
+  return postJson(g('/orders/release-captive'), body);
 }
 
 export function postDrill(body: DrillBody): Promise<OrderResponse> {
-  return postJson('/api/orders/drill', body);
+  return postJson(g('/orders/drill'), body);
 }
 
 export function postQueueLaunch(body: QueueLaunchBody): Promise<OrderResponse> {
-  return postJson('/api/queue/launch', body);
+  return postJson(g('/queue/launch'), body);
 }
 
 export function postQueueDrill(body: QueueDrillBody): Promise<OrderResponse> {
-  return postJson('/api/queue/drill', body);
+  return postJson(g('/queue/drill'), body);
 }
 
 export function postQueueHire(body: QueueHireBody): Promise<OrderResponse> {
-  return postJson('/api/queue/hire', body);
+  return postJson(g('/queue/hire'), body);
 }
 
 export function postQueuePromote(body: QueuePromoteBody): Promise<OrderResponse> {
-  return postJson('/api/queue/promote', body);
+  return postJson(g('/queue/promote'), body);
 }
 
 export function deleteQueuedOrder(
@@ -214,7 +232,7 @@ export function deleteQueuedOrder(
   ownerId: PlayerId,
 ): Promise<{ ok: boolean; error?: string }> {
   return requestJson(
-    `/api/queue/${id as unknown as number}?ownerId=${ownerId as unknown as number}`,
+    g(`/queue/${id as unknown as number}?ownerId=${ownerId as unknown as number}`),
     { method: 'DELETE' },
   );
 }
@@ -224,7 +242,7 @@ export function deletePendingCommand(
   ownerId: PlayerId,
 ): Promise<{ ok: boolean; error?: string }> {
   return requestJson(
-    `/api/pending/${id}?ownerId=${ownerId as unknown as number}`,
+    g(`/pending/${id}?ownerId=${ownerId as unknown as number}`),
     { method: 'DELETE' },
   );
 }
@@ -233,7 +251,7 @@ export function finalizePendingCommand(
   id: number,
   ownerId: PlayerId,
 ): Promise<{ ok: boolean; error?: string }> {
-  return postJson(`/api/pending/${id}/finalize`, { ownerId });
+  return postJson(g(`/pending/${id}/finalize`), { ownerId });
 }
 
 export interface ChatBody {
@@ -243,9 +261,76 @@ export interface ChatBody {
 }
 
 export function postChat(body: ChatBody): Promise<{ ok: boolean; error?: string }> {
-  return postJson('/api/chat', body);
+  return postJson(g('/chat'), body);
 }
 
+
+// ---------------------------------------------------------------------
+// Shell: identity + lobby (Phase A)
+// ---------------------------------------------------------------------
+
+export interface Me {
+  user: { id: number; name: string };
+  games: {
+    id: number;
+    code: string | null;
+    status: 'lobby' | 'active' | 'finished';
+    playerCount: number;
+    seatsTaken: number;
+    yourSeat: number | null;
+    updatedAt: number;
+  }[];
+}
+
+export async function fetchMe(): Promise<Me | null> {
+  try {
+    const r = await fetch('/api/me');
+    if (!r.ok) return null;
+    return (await r.json()) as Me;
+  } catch {
+    return null;
+  }
+}
+
+export function postGuestName(name: string): Promise<{ ok: boolean; error?: string }> {
+  return postJson('/api/auth/guest', { name });
+}
+
+export function createGame(body: {
+  playerCount: number;
+  simSpeed: number;
+}): Promise<{ ok: boolean; id?: number; code?: string; error?: string }> {
+  return postJson('/api/games', body);
+}
+
+export interface LobbyState {
+  ok: boolean;
+  id: number;
+  code: string;
+  status: 'lobby' | 'active' | 'finished';
+  playerCount: number;
+  simSpeed: number;
+  seats: { seat: number; name: string }[];
+  yourSeat: number | null;
+  error?: string;
+}
+
+export async function fetchLobby(code: string): Promise<LobbyState | null> {
+  try {
+    const r = await fetch(`/api/games/${encodeURIComponent(code)}`);
+    return (await r.json()) as LobbyState;
+  } catch {
+    return null;
+  }
+}
+
+export function joinGame(code: string): Promise<LobbyState> {
+  return postJson(`/api/games/${encodeURIComponent(code)}/join`, {});
+}
+
+export function leaveGame(code: string): Promise<{ ok: boolean; error?: string }> {
+  return postJson(`/api/games/${encodeURIComponent(code)}/leave`, {});
+}
 
 export interface GameMeta {
   gameId: number;
@@ -253,13 +338,16 @@ export interface GameMeta {
   /** Earliest sim time the server can replay (latest epoch baseline;
    *  0 unless a sim-version change promoted one mid-game). */
   epochFloor: number;
+  /** The session's seat in this game. */
+  yourSeat: number;
+  simSpeed: number;
 }
 
 /** Fetch game-level metadata. Re-fetched on every WS reconnect since
  *  epoch promotion only ever happens at server boot. */
 export async function fetchMeta(): Promise<GameMeta | null> {
   try {
-    const r = await fetch('/api/meta');
+    const r = await fetch(g('/meta'));
     if (!r.ok) return null;
     return (await r.json()) as GameMeta;
   } catch {
@@ -279,7 +367,7 @@ export async function fetchReplayAt(
   playerId: PlayerId,
   at: number,
 ): Promise<World | null> {
-  const url = `/api/replay?at=${Math.floor(at)}&playerId=${playerId as unknown as number}`;
+  const url = g(`/replay?at=${Math.floor(at)}&playerId=${playerId as unknown as number}`);
   try {
     const r = await fetch(url);
     if (!r.ok) return null;
@@ -307,7 +395,7 @@ export function openStateStream(
   onStatus?: (s: StreamStatus) => void,
 ): () => void {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const url = `${proto}://${location.host}/ws?playerId=${playerId as unknown as number}`;
+  const url = `${proto}://${location.host}/ws?gameId=${activeGameId}&playerId=${playerId as unknown as number}`;
   let cancelled = false;
   let ws: WebSocket | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;

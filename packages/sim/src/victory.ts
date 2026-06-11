@@ -19,6 +19,14 @@ export function checkVictory(world: World, now: number): void {
       return;
     }
   }
+  // Last player standing (docs/10 §Victory Conditions). Eliminations
+  // only happen inside event processing and checkVictory runs after
+  // every event, so the survivor is crowned at the exact elimination
+  // moment regardless of tick cadence (split-invariant).
+  const alive = world.players.filter((p) => !p.eliminated);
+  if (alive.length === 1 && world.players.length > 1) {
+    world.winnerId = alive[0]!.id;
+  }
 }
 
 /**

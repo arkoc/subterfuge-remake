@@ -53,6 +53,7 @@ import { CommandPalette } from './CommandPalette.js';
 import { DragHint } from './DragHint.js';
 import { playerColorHex, playerLetter } from './colors.js';
 import { formatTime } from './format.js';
+import { VictoryOverlay } from './VictoryOverlay.js';
 
 /** Forward projection horizon for the Time Machine (sim-ms). */
 const FUTURE_RANGE_MS = 4 * DAY_MS;
@@ -118,7 +119,14 @@ type SheetMode =
   | { kind: 'events' }
   | null;
 
-export function App() {
+interface AppProps {
+  /** The seat this session plays in the active game. */
+  mySeat: PlayerId;
+  /** Navigate back to the home screen (shell-provided). */
+  onExit?: () => void;
+}
+
+export function App({ mySeat, onExit }: AppProps) {
   const [liveWorld, setLiveWorld] = useState<World | null>(null);
   // WebSocket health. While 'reconnecting' the map keeps rendering the
   // last snapshot (it may be stale) and a banner warns the user.
@@ -147,7 +155,7 @@ export function App() {
       cancelled = true;
     };
   }, [connStatus]);
-  const [activePlayerId, setActivePlayerId] = useState<PlayerId>(0 as PlayerId);
+  const [activePlayerId, setActivePlayerId] = useState<PlayerId>(mySeat);
   const [sheet, setSheet] = useState<SheetMode>(null);
   // Picker modes (tap-to-target) were removed in favour of drag-only
   // interactions. The only intent state the UI now tracks is the open
@@ -1275,6 +1283,10 @@ export function App() {
       />
 
       {sheetEl}
+
+      {liveWorld.winnerId !== null && (
+        <VictoryOverlay world={liveWorld} mySeat={mySeat} onExit={onExit} />
+      )}
 
       {connStatus === 'reconnecting' && (
         <div role="status" className="conn-banner">

@@ -328,18 +328,28 @@ function capturePhase(
   fallbackOutpost: Outpost | null,
 ): void {
   // Remove destroyed-in-combat specialists entirely.
+  let queenLost = false;
   for (const dead of loser.destroyed) {
+    if (dead.kind === 'queen') queenLost = true;
     const idx = world.specialists.indexOf(dead);
     if (idx >= 0) world.specialists.splice(idx, 1);
   }
   // Mark surviving specialists as captives at the capture site.
   const site = captureSite ?? fallbackOutpost;
   for (const s of loser.specialists) {
+    if (s.kind === 'queen') queenLost = true;
     s.state = 'captive';
     s.captiveOf = winnerOwner;
     if (site !== null) {
       s.location = { kind: 'outpost', id: site.id };
     }
+  }
+  // Queen captured or destroyed → succession or elimination
+  // (docs/10 §Elimination: "Their Queen is captured. … If they have
+  // no Princess, they are eliminated."). onQueenLost no-ops if the
+  // player somehow still has an active Queen.
+  if (queenLost) {
+    onQueenLost(world, loser.ownerId, site?.pos ?? null);
   }
 }
 

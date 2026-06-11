@@ -12,7 +12,7 @@
  * Servers must refuse to replay event logs whose recorded version
  * mismatches this string (see Phase 7E).
  */
-export const SIM_VERSION = '0.13.0';
+export const SIM_VERSION = '0.14.0';
 
 export * from './types.js';
 export * from './rng.js';

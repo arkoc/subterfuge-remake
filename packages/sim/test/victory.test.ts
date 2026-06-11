@@ -15,6 +15,31 @@ describe('victory', () => {
     expect(w.winnerId).toBeNull();
   });
 
+  it('crowns the last un-eliminated player (queen-capture conquest)', () => {
+    const w = generateWorld({ seed: 3, playerCount: 2 });
+    const a = w.players[0]!.id;
+    const b = w.players[1]!.id;
+    // Find B's queen outpost and strip its defences.
+    const bQueenSite = w.outposts.find(
+      (o) => o.ownerId === b && hasQueenAt(w, o.id),
+    )!;
+    bQueenSite.drillers = 0;
+    bQueenSite.shieldCharge = 0;
+    bQueenSite.shieldChargedSince = Number.MAX_SAFE_INTEGER;
+    const source = w.outposts.find((o) => o.ownerId === a && !hasQueenAt(w, o.id))!;
+    source.drillers = 120;
+    issueLaunchOrder(w, {
+      ownerId: a,
+      sourceId: source.id,
+      destinationId: bQueenSite.id,
+      drillers: 100,
+    });
+    const sub = w.subs[0]!;
+    tick(w, sub.arrivalAt - w.time + 1);
+    expect(w.players[1]!.eliminated).toBe(true);
+    expect(w.winnerId).toBe(a);
+  });
+
   it('declares a winner when neptunium crosses 200 kg', () => {
     const w = generateWorld({ seed: 1, playerCount: 4 });
     const playerId = w.players[0]!.id;

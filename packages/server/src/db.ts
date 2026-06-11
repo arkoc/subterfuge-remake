@@ -178,6 +178,33 @@ export class GameStore {
       );
       CREATE INDEX IF NOT EXISTS game_baselines_game_sim
         ON game_baselines(game_id, sim_at);
+
+      -- Identity (Phase A): guest-first accounts + cookie sessions.
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS sessions (
+        token TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+
+      -- Seat assignments: which user plays which PlayerId in a game.
+      CREATE TABLE IF NOT EXISTS game_seats (
+        game_id INTEGER NOT NULL,
+        seat INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        joined_at INTEGER NOT NULL,
+        PRIMARY KEY (game_id, seat),
+        FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS game_seats_user ON game_seats(user_id);
     `);
     // Schema migration: backfill columns on older rows.
     const cols = this.db.prepare(`PRAGMA table_info(games)`).all() as {
@@ -198,6 +225,23 @@ export class GameStore {
           (SELECT MAX(id) FROM game_events WHERE game_events.game_id = games.id), 0
         )
       `);
+    }
+    // Phase A migration: lobby/lifecycle columns on `games`. Legacy
+    // rows (created before lobbies existed) are running worlds —
+    // default them to 'active' with an empty config.
+    if (!cols.some((c) => c.name === 'status')) {
+      this.db.exec(
+        `ALTER TABLE games ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`,
+      );
+    }
+    if (!cols.some((c) => c.name === 'config')) {
+      this.db.exec(`ALTER TABLE games ADD COLUMN config TEXT NOT NULL DEFAULT '{}'`);
+    }
+    if (!cols.some((c) => c.name === 'invite_code')) {
+      this.db.exec(`ALTER TABLE games ADD COLUMN invite_code TEXT`);
+      this.db.exec(
+        `CREATE UNIQUE INDEX IF NOT EXISTS games_invite_code ON games(invite_code)`,
+      );
     }
     // Checkpoints written before the watermark column have an
     // ambiguous event boundary. They are pure cache — drop them
@@ -480,9 +524,256 @@ export class GameStore {
     };
   }
 
+  // ---------- identity (Phase A) ----------
+
+  createUser(name: string): UserRow {
+    const ts = Date.now();
+    const info = this.db
+      .prepare(`INSERT INTO users (name, created_at) VALUES (@name, @ts)`)
+      .run({ name, ts });
+    return { id: Number(info.lastInsertRowid), name };
+  }
+
+  getUser(id: number): UserRow | null {
+    const row = this.db
+      .prepare(`SELECT id, name FROM users WHERE id = @id`)
+      .get({ id }) as { id: number; name: string } | undefined;
+    return row ?? null;
+  }
+
+  renameUser(id: number, name: string): void {
+    this.db.prepare(`UPDATE users SET name = @name WHERE id = @id`).run({ id, name });
+  }
+
+  createSession(userId: number, token: string): void {
+    const ts = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO sessions (token, user_id, created_at, last_seen_at)
+         VALUES (@token, @userId, @ts, @ts)`,
+      )
+      .run({ token, userId, ts });
+  }
+
+  userForSession(token: string): UserRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT u.id, u.name FROM sessions s JOIN users u ON u.id = s.user_id
+         WHERE s.token = @token`,
+      )
+      .get({ token }) as { id: number; name: string } | undefined;
+    if (!row) return null;
+    this.db
+      .prepare(`UPDATE sessions SET last_seen_at = @ts WHERE token = @token`)
+      .run({ ts: Date.now(), token });
+    return row;
+  }
+
+  // ---------- lobby / lifecycle (Phase A) ----------
+
+  createLobbyGame(config: GameConfig, inviteCode: string): number {
+    const ts = Date.now();
+    const info = this.db
+      .prepare(
+        `INSERT INTO games (seed, player_count, sim_version, last_event_id,
+           created_at, updated_at, world, status, config, invite_code)
+         VALUES (0, @playerCount, @simVersion, 0, @ts, @ts, '', 'lobby', @config, @code)`,
+      )
+      .run({
+        playerCount: config.playerCount,
+        simVersion: SIM_VERSION,
+        ts,
+        config: JSON.stringify(config),
+        code: inviteCode,
+      });
+    return Number(info.lastInsertRowid);
+  }
+
+  /** Promote a lobby to an active game with its generated world. */
+  activateGame(id: number, world: World): void {
+    const ts = Date.now();
+    this.db
+      .prepare(
+        `UPDATE games SET seed = @seed, world = @world, status = 'active',
+           sim_version = @simVersion, updated_at = @ts WHERE id = @id`,
+      )
+      .run({ id, seed: world.seed, world: JSON.stringify(world), simVersion: SIM_VERSION, ts });
+  }
+
+  setGameStatus(id: number, status: GameStatus): void {
+    this.db
+      .prepare(`UPDATE games SET status = @status, updated_at = @ts WHERE id = @id`)
+      .run({ id, status, ts: Date.now() });
+  }
+
+  gameMetaById(id: number): GameMetaRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, status, config, invite_code, player_count, updated_at
+         FROM games WHERE id = @id`,
+      )
+      .get({ id }) as RawGameMeta | undefined;
+    return row ? toMeta(row) : null;
+  }
+
+  gameMetaByCode(code: string): GameMetaRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, status, config, invite_code, player_count, updated_at
+         FROM games WHERE invite_code = @code`,
+      )
+      .get({ code }) as RawGameMeta | undefined;
+    return row ? toMeta(row) : null;
+  }
+
+  /** Persisted snapshot for one specific game id (boot/load path). */
+  gameById(id: number): PersistedGame | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, seed, player_count, sim_version, last_event_id, world
+         FROM games WHERE id = @id AND status != 'lobby'`,
+      )
+      .get({ id }) as
+      | {
+          id: number;
+          seed: number;
+          player_count: number;
+          sim_version: string;
+          last_event_id: number;
+          world: string;
+        }
+      | undefined;
+    if (!row || row.world === '') return null;
+    return {
+      id: row.id,
+      seed: row.seed,
+      playerCount: row.player_count,
+      simVersion: row.sim_version,
+      world: migrate(JSON.parse(row.world) as World),
+      lastEventId: row.last_event_id,
+    };
+  }
+
+  listActiveGameIds(): number[] {
+    const rows = this.db
+      .prepare(`SELECT id FROM games WHERE status = 'active'`)
+      .all() as { id: number }[];
+    return rows.map((r) => r.id);
+  }
+
+  // ---------- seats ----------
+
+  seatsForGame(gameId: number): SeatRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT s.seat, s.user_id, u.name FROM game_seats s
+         JOIN users u ON u.id = s.user_id
+         WHERE s.game_id = @gameId ORDER BY s.seat ASC`,
+      )
+      .all({ gameId }) as { seat: number; user_id: number; name: string }[];
+    return rows.map((r) => ({ seat: r.seat, userId: r.user_id, name: r.name }));
+  }
+
+  seatForUser(gameId: number, userId: number): number | null {
+    const row = this.db
+      .prepare(
+        `SELECT seat FROM game_seats WHERE game_id = @gameId AND user_id = @userId`,
+      )
+      .get({ gameId, userId }) as { seat: number } | undefined;
+    return row?.seat ?? null;
+  }
+
+  claimSeat(gameId: number, seat: number, userId: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO game_seats (game_id, seat, user_id, joined_at)
+         VALUES (@gameId, @seat, @userId, @ts)`,
+      )
+      .run({ gameId, seat, userId, ts: Date.now() });
+  }
+
+  releaseSeat(gameId: number, userId: number): void {
+    this.db
+      .prepare(`DELETE FROM game_seats WHERE game_id = @gameId AND user_id = @userId`)
+      .run({ gameId, userId });
+  }
+
+  /** All games a user holds a seat in, newest-activity first. */
+  gamesForUser(userId: number): GameMetaRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT g.id, g.status, g.config, g.invite_code, g.player_count, g.updated_at
+         FROM games g JOIN game_seats s ON s.game_id = g.id
+         WHERE s.user_id = @userId
+         ORDER BY g.updated_at DESC`,
+      )
+      .all({ userId }) as RawGameMeta[];
+    return rows.map(toMeta);
+  }
+
   close(): void {
     this.db.close();
   }
+}
+
+// ---------- Phase A row shapes ----------
+
+export interface UserRow {
+  id: number;
+  name: string;
+}
+
+export type GameStatus = 'lobby' | 'active' | 'finished';
+
+export interface GameConfig {
+  playerCount: number;
+  /** Sim-ms per real-ms for this game (1 = real time, 1000 = dev-fast). */
+  simSpeed: number;
+}
+
+export interface GameMetaRow {
+  id: number;
+  status: GameStatus;
+  config: GameConfig;
+  inviteCode: string | null;
+  playerCount: number;
+  updatedAt: number;
+}
+
+export interface SeatRow {
+  seat: number;
+  userId: number;
+  name: string;
+}
+
+interface RawGameMeta {
+  id: number;
+  status: string;
+  config: string;
+  invite_code: string | null;
+  player_count: number;
+  updated_at: number;
+}
+
+function toMeta(row: RawGameMeta): GameMetaRow {
+  let config: GameConfig;
+  try {
+    const parsed = JSON.parse(row.config) as Partial<GameConfig>;
+    config = {
+      playerCount: parsed.playerCount ?? row.player_count,
+      simSpeed: parsed.simSpeed ?? 1,
+    };
+  } catch {
+    config = { playerCount: row.player_count, simSpeed: 1 };
+  }
+  return {
+    id: row.id,
+    status: (row.status as GameStatus) ?? 'active',
+    config,
+    inviteCode: row.invite_code,
+    playerCount: row.player_count,
+    updatedAt: row.updated_at,
+  };
 }
 
 /**

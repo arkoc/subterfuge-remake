@@ -3029,3 +3029,276 @@ button.hud-link:focus-visible {
   border-radius: 2px;
   color: var(--txt-dim);
 }
+
+/* =====================================================================
+   Phase A shell — home / lobby / victory ceremony
+   ===================================================================== */
+
+.shell-status {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  gap: 14px;
+  text-align: center;
+  color: var(--txt-dim);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+}
+.shell-link {
+  background: transparent;
+  border: 1px solid var(--line-mid);
+  border-radius: 2px;
+  color: var(--phos);
+  padding: 8px 14px;
+  cursor: pointer;
+  font-family: var(--mono-body);
+}
+
+.home {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 28px 16px 60px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.home-mast {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.home-mast h1 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0.12em;
+  color: var(--phos);
+  font-weight: 600;
+}
+.home-sub {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--txt-mute);
+  letter-spacing: 0.06em;
+}
+.home-name,
+.home-name-input {
+  background: var(--bg-surface);
+  border: 1px solid var(--line-mid);
+  border-radius: 2px;
+  color: var(--txt);
+  font-family: var(--mono-body);
+  font-size: 12px;
+  padding: 8px 12px;
+  cursor: pointer;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-name:hover { border-color: var(--phos); }
+.home-name-input { cursor: text; }
+
+.home-error {
+  border: 1px solid var(--crit);
+  border-left-width: 3px;
+  background: rgba(255, 84, 112, 0.08);
+  color: var(--txt);
+  font-size: 12px;
+  padding: 10px 12px;
+  border-radius: 2px;
+}
+
+.home-panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--line-faint);
+  border-radius: 4px;
+  padding: 16px;
+}
+.home-panel h2 {
+  margin: 0 0 12px;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--txt-mute);
+  font-weight: 600;
+}
+.home-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+}
+.home-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--txt-mute);
+}
+.home-row select,
+.home-row input {
+  background: var(--bg-surface-2);
+  border: 1px solid var(--line-mid);
+  border-radius: 2px;
+  color: var(--txt);
+  font-family: var(--mono-body);
+  font-size: 13px;
+  padding: 10px;
+  min-height: 44px;
+}
+.home-row input { flex: 1; min-width: 160px; }
+.home-row select:focus,
+.home-row input:focus {
+  outline: 1px solid var(--phos-dim);
+  border-color: var(--phos);
+}
+.home-cta {
+  min-height: 44px;
+  padding: 10px 16px;
+  background: var(--phos);
+  border: 1px solid var(--phos);
+  border-radius: 2px;
+  color: var(--bg-void);
+  font-family: var(--mono-body);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.home-cta:disabled { opacity: 0.45; cursor: default; }
+.home-cta.ghost {
+  background: transparent;
+  color: var(--txt-dim);
+  border-color: var(--line-mid);
+}
+.home-cta.ghost:hover { border-color: var(--phos); color: var(--phos); }
+
+.home-games {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.home-game-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 12px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--line-faint);
+  border-radius: 2px;
+  color: var(--txt);
+  font-family: var(--mono-body);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.home-game-row:hover { border-color: var(--phos); }
+.home-game-status {
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 2px;
+  border: 1px solid;
+}
+.home-game-status.s-lobby { color: var(--warn); }
+.home-game-status.s-active { color: var(--phos); }
+.home-game-status.s-finished { color: var(--txt-mute); }
+.home-game-code { color: var(--txt-dim); }
+.home-game-meta { color: var(--txt-mute); font-size: 11px; }
+
+.lobby-seat { cursor: default; }
+.lobby-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  box-shadow: 0 0 6px currentColor;
+}
+
+/* ---- victory ceremony ---- */
+
+.victory-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  background: rgba(2, 8, 18, 0.82);
+  backdrop-filter: blur(4px);
+}
+.victory-card {
+  width: min(440px, calc(100vw - 32px));
+  background: var(--bg-surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 26px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.victory-headline {
+  font-size: 26px;
+  letter-spacing: 0.3em;
+  font-weight: 700;
+  text-align: center;
+}
+.victory-headline.win { color: var(--phos); text-shadow: 0 0 18px var(--phos-glow); }
+.victory-headline.lose { color: var(--txt-dim); }
+.victory-sub {
+  text-align: center;
+  font-size: 12px;
+  color: var(--txt-dim);
+}
+.victory-standings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.victory-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--line-faint);
+  border-radius: 2px;
+  font-size: 12px;
+}
+.victory-row.me { border-color: var(--phos-dim); }
+.victory-row.out { opacity: 0.55; }
+.victory-rank {
+  width: 14px;
+  text-align: right;
+  color: var(--txt-mute);
+  font-family: var(--mono-display);
+}
+.victory-kg {
+  font-family: var(--mono-display);
+  font-variant-numeric: tabular-nums;
+}
+.victory-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+.victory-chip {
+  position: fixed;
+  top: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  background: var(--bg-overlay);
+  border: 1px solid var(--phos-dim);
+  border-radius: 999px;
+  color: var(--phos);
+  font-family: var(--mono-body);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  padding: 8px 16px;
+  cursor: pointer;
+}
